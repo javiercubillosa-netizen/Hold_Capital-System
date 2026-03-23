@@ -1,10 +1,9 @@
-Flask
+flask
 gunicorn
 psycopg2-binary
-cryptography
-pandas
-plotly
 ccxt
-python-dotenv
 numpy
 requests
+python-dotenv
+pandas
+plotly
