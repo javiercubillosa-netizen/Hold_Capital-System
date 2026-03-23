@@ -2,12 +2,26 @@
 <html lang="es">
 <head>
 <style>
+    /* Estilos Élite Hold Capital (Corregido) */
+    
+    /* 1. Fondo negro total */
     body { background-color: #000000 !important; color: #F5F5DC !important; }
-    .card, .container-fluid { background-color: #101010 !important; border: 1px solid #D4AF37 !important; }
-    h1, h2, h3, .text-primary { color: #D4AF37 !important; }
-    .btn-primary, button, .btn-activate { background-color: #D4AF37 !important; color: #000000 !important; border: none !important; font-weight: bold; }
-</style>
-    <meta charset="UTF-8">
+    
+    /* 2. Tarjetas y contenedores con borde dorado sutil */
+    .card, .container-fluid, .navbar { background-color: #101010 !important; border: 1px solid #D4AF37 !important; border-radius: 8px; }
+    
+    /* 3. TÍTULO PRINCIPAL Y SUBTÍTULOS EN DORADO (¡La corrección!) */
+    h1, h2, h3, h4, h5, .display-1, .display-2, .text-primary, .navbar-brand { color: #D4AF37 !important; font-weight: bold !important; }
+    
+    /* 4. Textos secundarios en Marfil */
+    p, span, .text-muted { color: #F5F5DC !important; }
+    
+    /* 5. Botones "ACTIVAR" en Dorado con texto Negro */
+    .btn-primary, button, .btn-activate, .btn-success { background-color: #D4AF37 !important; color: #000000 !important; border: none !important; font-weight: bold; text-transform: uppercase; }
+    
+    /* 6. Brillo al pasar el mouse por los botones */
+    .btn-primary:hover { background-color: #F5F5DC !important; color: #000000 !important; }
+</style>    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard | HoldCapital.io</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
