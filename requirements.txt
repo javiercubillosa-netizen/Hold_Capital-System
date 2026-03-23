@@ -6,3 +6,5 @@ pandas
 plotly
 ccxt
 python-dotenv
+numpy
+requests
