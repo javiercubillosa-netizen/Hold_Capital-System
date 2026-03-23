@@ -1,89 +1,56 @@
 import ccxt, time, json, os, requests, sys, numpy as np
+import psycopg2 # Necesario para conectar con tu Postgres de Railway
 from datetime import datetime
+from psycopg2.extras import RealDictCursor
 
 # ==========================================
-# 🌐 CONFIG SERVIDOR (CAMBIAR IP)
+# 🌐 CONFIGURACIÓN ESTRATÉGICA RAILWAY
 # ==========================================
-SERVER_URL = "http://127.0.0.1:5000"
+DATABASE_URL = os.getenv("DATABASE_URL") # Railway la entrega automáticamente
 
 # ==========================================
-# 🔑 SEGURIDAD
+# 🔑 FUNCIONES DE ENLACE CON DASHBOARD
 # ==========================================
-CLIENTE = "PHOENIX_SYSTEM"
-CLAVE_MAESTRA = "Javier2026"
-TOKEN = "TU_TOKEN"
-CHAT_ID = "TU_CHAT_ID"
-
-def enviar_telegram(m):
+def obtener_config_usuario():
+    """Extrae las API Keys y el estado del bot desde la DB de Railway"""
     try:
-        if TOKEN:
-            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                          json={"chat_id": CHAT_ID, "text": m})
-    except:
-        pass
-
-# ==========================================
-# 🌐 ESTADO DESDE SERVIDOR
-# ==========================================
-def obtener_estado(cliente):
-    try:
-        r = requests.post(f"{SERVER_URL}/api/estado",
-                          json={"cliente": cliente})
-
-        data = r.json()
-
-        if data["status"] != "ok":
-            print(f"🛑 SISTEMA DETENIDO: {data['status']}")
-            sys.exit()
-
-        return data["gas"]
-
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        # Buscamos al usuario admin que creamos antes
+        cur.execute("SELECT * FROM usuarios WHERE email = 'admin@holdcapital.io' LIMIT 1")
+        user = cur.fetchone()
+        conn.close()
+        return user
     except Exception as e:
-        print("❌ ERROR CONEXIÓN SERVIDOR:", e)
-        sys.exit()
+        print(f"❌ Error DB: {e}")
+        return None
 
 # ==========================================
-# 🌐 DESCONTAR GAS EN SERVIDOR (PRO)
-# ==========================================
-def descontar_gas(cliente, comision):
-    try:
-        r = requests.post(f"{SERVER_URL}/api/descontar",
-                          json={
-                              "cliente": cliente,
-                              "consumo": comision
-                          })
-
-        data = r.json()
-
-        if data.get("status") != "ok":
-            print("🛑 ERROR EN DESCUENTO:", data)
-
-    except Exception as e:
-        print("⚠️ ERROR DESCONTANDO GAS:", e)
-
-# ==========================================
-# 🦅 MOTOR PHOENIX
+# 🦅 MOTOR PHOENIX HIBRID (Versión Cloud)
 # ==========================================
 class PhoenixHybridGold:
 
-    def __init__(self, capital, api_key, api_secret):
-
-        self.cap_total = float(capital)
+    def __init__(self, config):
+        # Configuramos con los datos de la DB
+        self.api_key = config['api_key_cifrada']
+        self.api_secret = config['api_secret_cifrada']
+        
+        # Capital inicial (puedes ajustarlo para que también se lea de la DB)
+        self.cap_total = 1000.0 # Valor base si no está en DB
         self.cap_operativo = self.cap_total * 0.70
         self.monto_ini = self.cap_operativo * 0.125
 
         self.pares = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT"]
 
         self.exchange = ccxt.binance({
-            'apiKey': api_key,
-            'secret': api_secret,
+            'apiKey': self.api_key,
+            'secret': self.api_secret,
             'enableRateLimit': True,
             'options': {'adjustForTimeDifference': True}
         })
 
         self.archivo_estado = "phoenix_state.json"
         self.estado = self.cargar_estado()
-
         self.profit_objetivo = 1.3
         self.trailing_call = 0.3
         self.max_recompras = 10
@@ -107,19 +74,11 @@ class PhoenixHybridGold:
             closes = [x[4] for x in ohlcv]
             atr = np.mean(np.array(highs) - np.array(lows))
             return atr, closes[-1]
-        except:
-            return 0, 0
+        except: return 0, 0
 
     def procesar(self):
-        cliente = CLIENTE
-        gas = obtener_estado(cliente)
-
         ahora = datetime.now().strftime('%H:%M:%S')
-        print(f"\n--- 📡 Scan Phoenix {ahora} | ⛽ Gas: ${gas:.2f} ---")
-
-        if gas <= 0:
-            print("🛑 SISTEMA DETENIDO POR GAS")
-            return
+        print(f"--- 📡 Scan Phoenix {ahora} ---")
 
         for p in self.pares:
             try:
@@ -127,111 +86,50 @@ class PhoenixHybridGold:
                 precio = ticker['last']
                 b = self.estado[p]
 
-                # ==========================================
-                # 🟢 COMPRA INICIAL
-                # ==========================================
+                # --- Lógica de Compra inicial ---
                 if b['tk'] == 0:
                     atr, last_close = self.calcular_atr(p)
-
                     if atr > 0 and precio > (last_close + (atr * 1.5)):
-                        print(f"⏳ {p}: ATR bloquea entrada")
                         continue
-
+                    
                     cantidad = self.monto_ini / precio
-
                     b.update({'tk': cantidad, 'pm': precio, 'ni': 1, 'pico': precio})
                     self.guardar_estado()
+                    print(f"🚀 COMPRA {p} ${precio:.2f}")
 
-                    enviar_telegram(f"🚀 COMPRA {p} ${precio:.2f}")
-
-                # ==========================================
-                # 🔴 GESTIÓN POSICIÓN
-                # ==========================================
+                # --- Gestión de Posición ---
                 else:
-                    if precio > b['pico']:
-                        b['pico'] = precio
-
+                    if precio > b['pico']: b['pico'] = precio
                     objetivo = b['pm'] * (1 + self.profit_objetivo / 100)
 
-                    # ======================================
-                    # 💰 VENTA + DESCUENTO SaaS
-                    # ======================================
-                    if precio >= objetivo:
-                        if precio <= b['pico'] * (1 - (self.trailing_call / 100)):
-
-                            ganancia = (precio * b['tk']) - (b['pm'] * b['tk'])
-
-                            comision = ganancia * 0.20
-
-                            # 🔥 DESCUENTO EN SERVIDOR
-                            descontar_gas(cliente, comision)
-
-                            print(f"💰 Ganancia: ${ganancia:.2f}")
-                            print(f"⛽ Comisión: ${comision:.2f}")
-
-                            enviar_telegram(f"💰 VENTA {p} Ganancia ${ganancia:.2f}")
-
-                            b.update({'tk': 0.0, 'pm': 0.0, 'ni': 0, 'pico': 0.0})
-                            self.guardar_estado()
-                            continue
-
-                    # ======================================
-                    # 📉 DCA INTELIGENTE
-                    # ======================================
-                    caida = (1 - (precio / b['pm'])) * 100
-
-                    if caida >= 70:
-                        step = 3
-                    elif caida >= 50:
-                        step = 5
-                    else:
-                        step = 3
-
-                    if caida >= step and b['ni'] < self.max_recompras:
-
-                        if "BTC" in p or "ETH" in p:
-                            factor = 1.55
-                        else:
-                            factor = 1.75
-
-                        monto_rec = self.base_dca * (factor ** b['ni'])
-
-                        nueva_cant = b['tk'] + (monto_rec / precio)
-
-                        b['pm'] = ((b['pm'] * b['tk']) + monto_rec) / nueva_cant
-                        b['tk'] = nueva_cant
-                        b['ni'] += 1
-                        b['pico'] = precio
-
+                    if precio >= objetivo and precio <= b['pico'] * (1 - (self.trailing_call / 100)):
+                        ganancia = (precio * b['tk']) - (b['pm'] * b['tk'])
+                        print(f"💰 VENTA {p} Ganancia ${ganancia:.2f}")
+                        b.update({'tk': 0.0, 'pm': 0.0, 'ni': 0, 'pico': 0.0})
                         self.guardar_estado()
-
-                        enviar_telegram(f"📉 DCA {p} nivel {b['ni']} | monto ${monto_rec:.2f}")
+                        continue
 
                 print(f"📊 {p}: ${precio:.2f} | PM: ${b['pm']:.2f} | Niv: {b['ni']}")
-
             except Exception as e:
                 print(f"⚠️ {p}: Error API")
 
 # ==========================================
-# 🏁 MAIN
+# 🏁 CICLO PRINCIPAL (MODO CLOUD)
 # ==========================================
 if __name__ == "__main__":
-    try:
-        print("🦅 PHOENIX HYBRID GOLD v8.1 (SaaS PRO)")
-
-        if input("🔑 Clave: ") != CLAVE_MAESTRA:
-            sys.exit()
-
-        api = input("API KEY: ")
-        sec = input("SECRET: ")
-        cap = input("Capital: ")
-
-        bot = PhoenixHybridGold(cap, api, sec)
-
-        while True:
+    print("🦅 PHOENIX HIBRID v9.0 - MODO CLOUD ACTIVO")
+    
+    while True:
+        config = obtener_config_usuario()
+        
+        if config and config['hibrid_activo']:
+            # El bot solo se crea e inicia si el botón en la WEB está ON
+            if 'bot' not in locals():
+                bot = PhoenixHybridGold(config)
+            
             bot.procesar()
-            time.sleep(45)
+        else:
+            print("💤 Phoenix Hibrid en espera (Inactivo en Dashboard)")
+            if 'bot' in locals(): del bot # Liberamos memoria si se apaga
 
-    except KeyboardInterrupt:
-        print("\n🛑 SISTEMA DETENIDO POR USUARIO")
-        print("💾 Cierre profesional correcto")
+        time.sleep(45)
