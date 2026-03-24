@@ -12,42 +12,140 @@
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
             text-align: center;
         }
         .container {
             border: 2px solid #d4af37;
-            padding: 50px;
+            padding: 40px;
             border-radius: 15px;
             background: linear-gradient(145deg, #0f0f0f, #1a1a1a);
-            box-shadow: 0 0 20px rgba(212, 175, 55, 0.2);
+            box-shadow: 0 0 30px rgba(212, 175, 55, 0.3);
+            max-width: 800px;
+            width: 90%;
         }
         h1 {
             color: #d4af37;
-            font-size: 3rem;
-            margin-bottom: 10px;
-            letter-spacing: 2px;
+            font-size: 2.5rem;
+            margin-bottom: 5px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
         }
-        p {
-            font-size: 1.2rem;
-            color: #ccc;
+        .subtitle {
+            font-size: 1rem;
+            color: #888;
+            margin-bottom: 30px;
+        }
+        /* Estilo de las Tarjetas de Datos */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .card {
+            background: #000;
+            border: 1px solid #333;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: inset 0 0 10px rgba(212, 175, 55, 0.1);
+        }
+        .card h3 {
+            color: #888;
+            font-size: 0.8rem;
+            margin: 0 0 10px 0;
+            text-transform: uppercase;
+        }
+        .card .value {
+            color: #d4af37;
+            font-size: 1.8rem;
+            font-weight: bold;
+        }
+        /* Estilo de la Tabla */
+        .table-container {
+            margin-top: 20px;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            border: 1px solid #222;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+        th {
+            background: #111;
+            color: #d4af37;
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #333;
+        }
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #111;
+            text-align: left;
         }
         .status {
             margin-top: 30px;
-            padding: 10px;
+            padding: 15px;
             border-top: 1px solid #333;
-            font-size: 0.9rem;
-            color: #d4af37;
+            font-size: 0.8rem;
+            color: #00ff88; /* Verde Neón para indicar activo */
+            letter-spacing: 1px;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>HOLDCAPITAL.IO</h1>
-        <p>Ecosistema Digital de Alta Precisión</p>
+        <p class="subtitle">Ecosistema Digital de Alta Precisión | {{ usuario }}</p>
+
+        <div class="dashboard-grid">
+            <div class="card">
+                <h3>Capital Real-Time</h3>
+                <div class="value">$ {{ "%.2f"|format(capital) }}</div>
+            </div>
+            <div class="card">
+                <h3>Saldo Gas Phoenix</h3>
+                <div class="value">$ {{ "%.2f"|format(gas) }}</div>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Motor</th>
+                        <th>Par</th>
+                        <th>Tipo</th>
+                        <th>Ganancia</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for op in operaciones %}
+                    <tr>
+                        <td>{{ op.motor }}</td>
+                        <td>{{ op.par }}</td>
+                        <td>{{ op.tipo }}</td>
+                        <td style="color: {{ '#00ff88' if op.ganancia > 0 else '#ff4444' }}; font-weight: bold;">
+                            {{ "$ %.2f"|format(op.ganancia) if op.ganancia != 0 else "---" }}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="4" style="text-align: center; color: #555; padding: 20px;">
+                            Esperando sincronización de motores...
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
         <div class="status">
-            🦅 Phoenix System: Conectado | Modo Cloud Activo
+            ● 🦅 Phoenix System: Conectado | Modo Cloud Activo
         </div>
     </div>
 </body>
