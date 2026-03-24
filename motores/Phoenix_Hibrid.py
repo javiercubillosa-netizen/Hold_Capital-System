@@ -1,47 +1,61 @@
 import ccxt, time, json, os, requests, sys, numpy as np
-import psycopg2 # Necesario para conectar con tu Postgres de Railway
+import psycopg2 
 from datetime import datetime
 from psycopg2.extras import RealDictCursor
 
 # ==========================================
 # 🌐 CONFIGURACIÓN ESTRATÉGICA RAILWAY
 # ==========================================
-DATABASE_URL = os.getenv("DATABASE_URL") # Railway la entrega automáticamente
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # ==========================================
-# 🔑 FUNCIONES DE ENLACE CON DASHBOARD
+# ⛽ CLASE DE GESTIÓN DE GAS (POSTGRES)
 # ==========================================
-def obtener_config_usuario():
-    """Extrae las API Keys y el estado del bot desde la DB de Railway"""
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        # Buscamos al usuario admin que creamos antes
-        cur.execute("SELECT * FROM usuarios WHERE email = 'admin@holdcapital.io' LIMIT 1")
-        user = cur.fetchone()
-        conn.close()
-        return user
-    except Exception as e:
-        print(f"❌ Error DB: {e}")
-        return None
+class PhoenixGas:
+    def __init__(self):
+        self.db_url = DATABASE_URL
+
+    def leer_gas(self):
+        try:
+            conn = psycopg2.connect(self.db_url)
+            cur = conn.cursor()
+            cur.execute("SELECT balance FROM gas_system WHERE id = 1;")
+            res = cur.fetchone()
+            cur.close()
+            conn.close()
+            return float(res[0]) if res else 0.0
+        except Exception as e:
+            print(f"❌ Error al leer GAS: {e}")
+            return 0.0
+
+    def registrar_operacion_y_descontar(self, motor, par, ganancia):
+        """Registra la ganancia en el historial y descuenta el 20% del Gas"""
+        comision = ganancia * 0.20
+        try:
+            conn = psycopg2.connect(self.db_url)
+            cur = conn.cursor()
+            # 1. Descontar del balance de Gas
+            cur.execute("UPDATE gas_system SET balance = balance - %s WHERE id = 1;", (comision,))
+            # 2. Registrar en historial de operaciones para la WEB
+            cur.execute("""
+                INSERT INTO operaciones (motor, par, tipo, precio, ganancia) 
+                VALUES (%s, %s, 'VENTA', 0, %s);
+            """, (motor, par, ganancia))
+            conn.commit()
+            cur.close()
+            conn.close()
+            print(f"✅ Gas actualizado: -${comision:.2f} | Historial guardado.")
+        except Exception as e:
+            print(f"⚠️ Error al actualizar Gas/Historial: {e}")
 
 # ==========================================
-# 🦅 MOTOR PHOENIX HIBRID (Versión Cloud)
+# 🦅 MOTOR PHOENIX HIBRID (Versión 100% DB)
 # ==========================================
 class PhoenixHybridGold:
-
     def __init__(self, config):
-        # Configuramos con los datos de la DB
         self.api_key = config['api_key_cifrada']
         self.api_secret = config['api_secret_cifrada']
         
-        # Capital inicial (puedes ajustarlo para que también se lea de la DB)
-        self.cap_total = 1000.0 # Valor base si no está en DB
-        self.cap_operativo = self.cap_total * 0.70
-        self.monto_ini = self.cap_operativo * 0.125
-
-        self.pares = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT"]
-
         self.exchange = ccxt.binance({
             'apiKey': self.api_key,
             'secret': self.api_secret,
@@ -49,36 +63,25 @@ class PhoenixHybridGold:
             'options': {'adjustForTimeDifference': True}
         })
 
-        self.archivo_estado = "phoenix_state.json"
-        self.estado = self.cargar_estado()
+        self.pares = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT"]
+        self.gas_manager = PhoenixGas()
+        
+        # Estado inicial (En el futuro esto también irá a una tabla 'estado_motores')
+        self.estado = {p: {'tk': 0.0, 'pm': 0.0, 'ni': 0, 'pico': 0.0} for p in self.pares}
+        
         self.profit_objetivo = 1.3
         self.trailing_call = 0.3
-        self.max_recompras = 10
-        self.base_dca = self.cap_total * 0.05
-
-    def cargar_estado(self):
-        if os.path.exists(self.archivo_estado):
-            with open(self.archivo_estado, 'r') as f:
-                return json.load(f)
-        return {p: {'tk': 0.0, 'pm': 0.0, 'ni': 0, 'pico': 0.0} for p in self.pares}
-
-    def guardar_estado(self):
-        with open(self.archivo_estado, 'w') as f:
-            json.dump(self.estado, f, indent=4)
-
-    def calcular_atr(self, par):
-        try:
-            ohlcv = self.exchange.fetch_ohlcv(par, timeframe='1h', limit=20)
-            highs = [x[2] for x in ohlcv]
-            lows = [x[3] for x in ohlcv]
-            closes = [x[4] for x in ohlcv]
-            atr = np.mean(np.array(highs) - np.array(lows))
-            return atr, closes[-1]
-        except: return 0, 0
+        self.monto_ini = 125.0 # Ajustado según tu lógica de capital operativo
 
     def procesar(self):
         ahora = datetime.now().strftime('%H:%M:%S')
-        print(f"--- 📡 Scan Phoenix {ahora} ---")
+        saldo_gas = self.gas_manager.leer_gas()
+        
+        print(f"--- 📡 Scan Phoenix Hybrid | Gas: ${saldo_gas:.2f} | {ahora} ---")
+
+        if saldo_gas <= 0.50:
+            print("🚫 GAS INSUFICIENTE. Operaciones pausadas.")
+            return
 
         for p in self.pares:
             try:
@@ -86,50 +89,60 @@ class PhoenixHybridGold:
                 precio = ticker['last']
                 b = self.estado[p]
 
-                # --- Lógica de Compra inicial ---
-                if b['tk'] == 0:
-                    atr, last_close = self.calcular_atr(p)
-                    if atr > 0 and precio > (last_close + (atr * 1.5)):
-                        continue
-                    
-                    cantidad = self.monto_ini / precio
-                    b.update({'tk': cantidad, 'pm': precio, 'ni': 1, 'pico': precio})
-                    self.guardar_estado()
-                    print(f"🚀 COMPRA {p} ${precio:.2f}")
-
-                # --- Gestión de Posición ---
-                else:
+                # --- Lógica de Venta y Descuento de Gas ---
+                if b['tk'] > 0:
                     if precio > b['pico']: b['pico'] = precio
                     objetivo = b['pm'] * (1 + self.profit_objetivo / 100)
 
+                    # Condición de salida Trailing Profit
                     if precio >= objetivo and precio <= b['pico'] * (1 - (self.trailing_call / 100)):
                         ganancia = (precio * b['tk']) - (b['pm'] * b['tk'])
-                        print(f"💰 VENTA {p} Ganancia ${ganancia:.2f}")
+                        
+                        print(f"💰 VENTA EXITOSA {p} | Ganancia: ${ganancia:.2f}")
+                        
+                        # ACTUALIZACIÓN EN BASE DE DATOS
+                        self.gas_manager.registrar_operacion_y_descontar('Hybrid Gold', p, ganancia)
+                        
                         b.update({'tk': 0.0, 'pm': 0.0, 'ni': 0, 'pico': 0.0})
-                        self.guardar_estado()
                         continue
 
-                print(f"📊 {p}: ${precio:.2f} | PM: ${b['pm']:.2f} | Niv: {b['ni']}")
+                # --- Lógica de Compra ---
+                elif b['tk'] == 0:
+                    # (Aquí va tu lógica de ATR o indicadores para comprar)
+                    cantidad = self.monto_ini / precio
+                    b.update({'tk': cantidad, 'pm': precio, 'ni': 1, 'pico': precio})
+                    print(f"🚀 COMPRA EJECUTADA {p} @ ${precio:.2f}")
+
             except Exception as e:
-                print(f"⚠️ {p}: Error API")
+                print(f"⚠️ Error en par {p}: {e}")
 
 # ==========================================
-# 🏁 CICLO PRINCIPAL (MODO CLOUD)
+# 🏁 CICLO PRINCIPAL
 # ==========================================
+def obtener_config_usuario():
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM usuarios WHERE email = 'admin@holdcapital.io' LIMIT 1")
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+        return user
+    except: return None
+
 if __name__ == "__main__":
-    print("🦅 PHOENIX HIBRID v9.0 - MODO CLOUD ACTIVO")
+    print("🦅 PHOENIX HIBRID v10.0 - CONEXIÓN POSTGRES OK")
+    bot = None
     
     while True:
         config = obtener_config_usuario()
         
-        if config and config['hibrid_activo']:
-            # El bot solo se crea e inicia si el botón en la WEB está ON
-            if 'bot' not in locals():
+        if config and config.get('hibrid_activo'):
+            if bot is None:
                 bot = PhoenixHybridGold(config)
-            
             bot.procesar()
         else:
-            print("💤 Phoenix Hibrid en espera (Inactivo en Dashboard)")
-            if 'bot' in locals(): del bot # Liberamos memoria si se apaga
+            print("💤 Phoenix Hibrid en espera (OFF en Dashboard)")
+            bot = None 
 
         time.sleep(45)

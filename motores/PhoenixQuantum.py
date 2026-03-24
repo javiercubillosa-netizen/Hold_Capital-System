@@ -1,74 +1,85 @@
-import ccxt, time, base64, json, os, requests, sys, hashlib
+import ccxt, time, json, os, requests, sys, hashlib
 import numpy as np
+import psycopg2 
 from datetime import datetime
+from psycopg2.extras import RealDictCursor
 
-# ================= VARIABLES DE ENTORNO (RAILWAY) =================
-TOKEN = os.getenv("TELEGRAM_TOKEN", "8597680464:AAHkASdRok39ynNPXwveyWyZLpzolFbNQtw")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "5152462398")
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
-CAPITAL_TOTAL = float(os.getenv("CAPITAL_INICIAL", 100)) 
+# ==========================================
+# 🌐 CONFIGURACIÓN ESTRATÉGICA RAILWAY
+# ==========================================
+DATABASE_URL = os.getenv("DATABASE_URL")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-CLAVE_SECRETA = "PHOENIX_SECRET_2026"
-ARCHIVO_GAS = "gas.txt"
-
-def enviar_telegram(m):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": m, "parse_mode": "Markdown"},
-            timeout=10
-        )
-    except: pass
-
-class PhoenixGas:
-    def generar_firma(self, cliente, gas):
-        data = f"{cliente}:{float(gas):.2f}:{CLAVE_SECRETA}"
-        return hashlib.sha256(data.encode()).hexdigest()
-
-    def crear_gas(self, cliente, gas):
-        firma = self.generar_firma(cliente, gas)
-        data = {"cliente": cliente, "gas": gas, "firma": firma}
-        return base64.b64encode(json.dumps(data).encode()).decode()
+# ==========================================
+# ⛽ GESTOR DE GAS Y REGISTRO (POSTGRES)
+# ==========================================
+class PhoenixCloudGas:
+    def __init__(self):
+        self.db_url = DATABASE_URL
 
     def leer_gas(self):
-        if not os.path.exists(ARCHIVO_GAS):
-            self.guardar_gas("PHOENIX_SYSTEM", 50.0)
-        with open(ARCHIVO_GAS, "r") as f:
-            data = json.loads(base64.b64decode(f.read()).decode())
-        if data["firma"] != self.generar_firma(data["cliente"], data["gas"]):
-            print("🚨 GAS ALTERADO"); sys.exit()
-        return data["cliente"], data["gas"]
+        try:
+            conn = psycopg2.connect(self.db_url)
+            cur = conn.cursor()
+            cur.execute("SELECT cliente, balance FROM gas_system WHERE id = 1;")
+            res = cur.fetchone()
+            cur.close()
+            conn.close()
+            return res[0], float(res[1]) if res else (None, 0.0)
+        except Exception as e:
+            print(f"❌ Error al leer GAS: {e}")
+            return "JAVIER CUBILLOS", 0.0
 
-    def guardar_gas(self, cliente, gas):
-        with open(ARCHIVO_GAS, "w") as f:
-            f.write(self.crear_gas(cliente, gas))
-
-    def descontar(self, cliente, gas, ganancia):
+    def registrar_y_descontar(self, par, ganancia):
+        """Descuenta comisión y registra la venta en el historial del Dashboard"""
         comision = ganancia * 0.20
-        gas -= comision
-        self.guardar_gas(cliente, max(0, gas))
-        return comision, gas
+        try:
+            conn = psycopg2.connect(self.db_url)
+            cur = conn.cursor()
+            # 1. Actualizar balance de Gas
+            cur.execute("UPDATE gas_system SET balance = balance - %s WHERE id = 1;", (comision,))
+            # 2. Registrar en la tabla de operaciones para que aparezca en la Web
+            cur.execute("""
+                INSERT INTO operaciones (motor, par, tipo, precio, ganancia) 
+                VALUES ('Quantum Hedge AI', %s, 'VENTA', 0, %s);
+            """, (par, ganancia))
+            conn.commit()
+            cur.close()
+            conn.close()
+            return comision
+        except Exception as e:
+            print(f"⚠️ Error actualizando DB: {e}")
+            return 0.0
 
+# ==========================================
+# 🧠 MOTOR PHOENIX QUANTUM (Hedge AI Cloud)
+# ==========================================
 class PhoenixQuantumHedgeAI:
     def __init__(self, capital, api_key, api_secret):
-        self.gas_manager = PhoenixGas()
+        self.db_manager = PhoenixCloudGas()
         self.cap_total = capital
         self.cap_operativo = self.cap_total * 0.70
         self.monto_ini = self.cap_operativo * 0.125
+        
         self.pares = ["BTC/USDT","ETH/USDT","SOL/USDT","AVAX/USDT","LINK/USDT","FET/USDT"]
-        self.exchange = ccxt.binance({'apiKey': api_key, 'secret': api_secret, 'enableRateLimit': True})
-        self.estado = self.cargar_estado()
+        
+        self.exchange = ccxt.binance({
+            'apiKey': api_key, 
+            'secret': api_secret, 
+            'enableRateLimit': True,
+            'options': {'adjustForTimeDifference': True}
+        })
 
-    def cargar_estado(self):
-        if os.path.exists("phoenix_state.json"):
-            return json.load(open("phoenix_state.json"))
-        return {p:{'tk':0,'pm':0,'ni':0,'pico':0} for p in self.pares}
+        # Estado en memoria (Temporalmente, mientras el servidor esté vivo)
+        self.estado = {p:{'tk':0,'pm':0,'ni':0,'pico':0} for p in self.pares}
 
-    def guardar_estado(self):
-        json.dump(self.estado, open("phoenix_state.json","w"), indent=4)
+    def enviar_telegram(self, m):
+        try:
+            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                          json={"chat_id": CHAT_ID, "text": m, "parse_mode": "Markdown"})
+        except: pass
 
-    # LÓGICA DE IA INTEGRAL (SIN CAMBIOS)
     def ia_profit(self, par, precio, atr, last):
         vol = (atr/precio)*100 if precio else 0
         mom = ((precio-last)/last)*100 if last else 0
@@ -87,8 +98,12 @@ class PhoenixQuantumHedgeAI:
         except: return 0,0
 
     def procesar(self):
-        cliente, gas = self.gas_manager.leer_gas()
-        print(f"🧠 Phoenix Quantum | Gas: {gas:.2f}")
+        cliente, gas = self.db_manager.leer_gas()
+        print(f"🧠 Phoenix Quantum | Cliente: {cliente} | Gas: ${gas:.2f}")
+
+        if gas <= 0.50:
+            print("🚫 SALDO DE GAS CRÍTICO. Pausando operaciones.")
+            return
 
         for p in self.pares:
             try:
@@ -97,35 +112,44 @@ class PhoenixQuantumHedgeAI:
                 profit = self.ia_profit(p, precio, atr, last)
                 b = self.estado[p]
 
-                if b['tk'] == 0:
-                    # Lógica de compra Quantum
-                    cantidad = (self.monto_ini)/precio
-                    b.update({'tk':cantidad,'pm':precio,'ni':1,'pico':precio})
-                    self.guardar_estado()
-                    enviar_telegram(f"🟢 PHOENIX QUANTUM: COMPRA\nPar: {p}\nPrecio: ${precio:.2f}")
-                else:
-                    # Lógica de venta Quantum con Trailing
+                # --- Lógica de Venta con Trailing Dinámico ---
+                if b['tk'] > 0:
                     if precio > b['pico']: b['pico'] = precio
                     objetivo = b['pm']*(1+profit/100)
+                    
                     if precio >= objetivo and precio <= b['pico']*(1-0.3/100):
                         ganancia = (precio*b['tk'])-(b['pm']*b['tk'])
-                        comision, gas = self.gas_manager.descontar(cliente, gas, ganancia)
-                        enviar_telegram(f"🔴 PHOENIX QUANTUM: VENTA\nPar: {p}\nGanancia: ${ganancia:.2f}")
+                        
+                        # Guardar en Base de Datos y descontar Gas
+                        comision = self.db_manager.registrar_y_descontar(p, ganancia)
+                        
+                        self.enviar_telegram(f"🔴 PHOENIX QUANTUM: VENTA\n📦 Par: {p}\n💰 Ganancia: ${ganancia:.2f}\n⛽ Gas: -${comision:.2f}")
+                        
                         b.update({'tk':0,'pm':0,'ni':0,'pico':0})
-                        self.guardar_estado()
-            except Exception as e: print(f"⚠️ {p}: {e}")
+                
+                # --- Lógica de Compra ---
+                elif b['tk'] == 0:
+                    cantidad = self.monto_ini / precio
+                    b.update({'tk':cantidad, 'pm':precio, 'ni':1, 'pico':precio})
+                    self.enviar_telegram(f"🟢 PHOENIX QUANTUM: COMPRA\n📦 Par: {p}\n💵 Precio: ${precio:.2f}")
 
+            except Exception as e: print(f"⚠️ Error {p}: {e}")
+
+# ==========================================
+# 🏁 EJECUCIÓN
+# ==========================================
 if __name__ == "__main__":
-    print("🧠 SISTEMA PHOENIX QUANTUM v9.0")
-    if not API_KEY or not API_SECRET:
-        print("❌ Faltan credenciales API"); sys.exit()
+    API_KEY = os.getenv("BINANCE_API_KEY")
+    API_SECRET = os.getenv("BINANCE_API_SECRET")
+    CAPITAL_TOTAL = float(os.getenv("CAPITAL_INICIAL", 100))
 
+    print("🧠 SISTEMA PHOENIX QUANTUM v10.0 ONLINE")
     bot = PhoenixQuantumHedgeAI(CAPITAL_TOTAL, API_KEY, API_SECRET)
-    enviar_telegram("🚀 PHOENIX QUANTUM ONLINE\nSistema iniciado correctamente.")
 
     while True:
         try:
             bot.procesar()
             time.sleep(45)
         except Exception as e:
-            time.sleep(10)
+            print(f"⚠️ Error de ciclo: {e}")
+            time.sleep(15)
