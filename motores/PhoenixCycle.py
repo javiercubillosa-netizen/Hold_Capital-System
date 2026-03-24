@@ -33,13 +33,11 @@ class PhoenixCloudDB:
         try:
             conn = psycopg2.connect(self.db_url)
             cur = conn.cursor()
-            # Descontar gas
             cur.execute("UPDATE gas_system SET balance = balance - %s WHERE id = 1;", (monto_descuento,))
-            # Registrar DCA en el historial de la WEB
             cur.execute("""
                 INSERT INTO operaciones (motor, par, tipo, precio, ganancia) 
                 VALUES ('Cycle SuperD5', %s, 'DCA BUY', 0, %s);
-            """, (par, -monto_invertido)) # Ganancia negativa porque es inversión
+            """, (par, -monto_invertido)) 
             conn.commit()
             cur.close()
             conn.close()
@@ -62,7 +60,6 @@ class PhoenixSuperD5:
         self.FACTOR_BTC_ETH = 1.55
         self.FACTOR_ALT_IA = 1.75
         self.DIA_DCA = 5
-
         self.stop_global_pct = 0.25
 
         self.exchange = ccxt.binance({
@@ -72,8 +69,42 @@ class PhoenixSuperD5:
             'options': {'adjustForTimeDifference': True}
         })
 
-        # Estado en memoria (Para Railway es mejor persistir esto en una tabla luego)
         self.estado = {p: {'tk': 0.0, 'dca_fecha': ""} for p in self.todos_los_pares}
+
+    # --- 🛰️ NUEVA FUNCIÓN: REPORTE A LA WEB ---
+    def actualizar_balance_web(self):
+        """Reporta el capital de Cycle al Dashboard"""
+        try:
+            balance = self.exchange.fetch_balance()
+            usdt_libre = float(balance['total'].get('USDT', 0))
+            
+            capital_en_cripto = 0.0
+            # Cycle escanea todos sus pares específicos
+            for p in self.todos_los_pares:
+                base = p.split('/')[0]
+                cantidad = balance['total'].get(base, 0)
+                if cantidad > 0:
+                    ticker = self.exchange.fetch_ticker(p)
+                    capital_en_cripto += cantidad * ticker['last']
+            
+            total_equidad = usdt_libre + capital_en_cripto
+
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE balance_total 
+                SET capital_usdt = %s, 
+                    capital_cripto_usdt = %s, 
+                    total_equidad = %s, 
+                    ultima_actualizacion = CURRENT_TIMESTAMP
+                WHERE motor = 'Cycle SuperD5';
+            """, (usdt_libre, capital_en_cripto, total_equidad))
+            conn.commit()
+            cur.close()
+            conn.close()
+            print(f"📊 Web Actualizada | Cycle Total: ${total_equidad:.2f}")
+        except Exception as e:
+            print(f"⚠️ Error reporte web Cycle: {e}")
 
     def enviar_telegram(self, m):
         try: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": m})
@@ -99,44 +130,38 @@ class PhoenixSuperD5:
                     try:
                         f = self.FACTOR_BTC_ETH if p in ["BTC/USDT","ETH/USDT"] else self.FACTOR_ALT_IA
                         monto_final = monto_por_par * f
-                        
                         ticker = self.exchange.fetch_ticker(p)
                         precio = float(ticker['last'])
                         
-                        # Ejecución Market
                         orden = self.exchange.create_market_buy_order(p, monto_final / precio)
-                        
                         self.estado[p]['tk'] += float(orden['filled'])
                         self.estado[p]['dca_fecha'] = mes_actual
                         
-                        # Actualizar Gas y registrar en la WEB
-                        # En Cycle, el consumo de gas es pequeño por ciclo, pero 
-                        # descontamos una pequeña comisión por gestión de DCA.
                         self.db.actualizar_gas_y_operacion(0.01, p, monto_final)
-                        
                         self.enviar_telegram(f"🦅 PHOENIX CYCLE\n📥 DCA EJECUTADO: {p}\n💰 Inversión: ${monto_final:.2f}")
                         
                     except Exception as e:
                         print(f"❌ Error DCA {p}: {e}")
+        
+        # Reportar balance después de procesar
+        self.actualizar_balance_web()
 
 # ==========================================
 # 🏁 CICLO PRINCIPAL
 # ==========================================
 if __name__ == "__main__":
-    # Leemos configuración de las variables de Railway
     API_KEY = os.getenv("BINANCE_API_KEY")
     API_SECRET = os.getenv("BINANCE_API_SECRET")
     CAP_TOTAL = float(os.getenv("CAPITAL_TOTAL", 1000))
     DCA_MENSUAL = float(os.getenv("DCA_MENSUAL", 100))
 
-    print("🦅 PHOENIX CYCLE - MODO CLOUD ACTIVO")
-    
+    print("🦅 PHOENIX CYCLE - MODO DASHBOARD ACTIVO")
     bot = PhoenixSuperD5(CAP_TOTAL, DCA_MENSUAL, API_KEY, API_SECRET)
 
     while True:
         try:
             bot.procesar()
-            time.sleep(60) # Scan cada minuto
+            time.sleep(60) 
         except Exception as e:
             print(f"⚠️ Error Crítico: {e}")
             time.sleep(30)

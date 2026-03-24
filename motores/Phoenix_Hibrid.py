@@ -29,14 +29,11 @@ class PhoenixGas:
             return 0.0
 
     def registrar_operacion_y_descontar(self, motor, par, ganancia):
-        """Registra la ganancia en el historial y descuenta el 20% del Gas"""
         comision = ganancia * 0.20
         try:
             conn = psycopg2.connect(self.db_url)
             cur = conn.cursor()
-            # 1. Descontar del balance de Gas
             cur.execute("UPDATE gas_system SET balance = balance - %s WHERE id = 1;", (comision,))
-            # 2. Registrar en historial de operaciones para la WEB
             cur.execute("""
                 INSERT INTO operaciones (motor, par, tipo, precio, ganancia) 
                 VALUES (%s, %s, 'VENTA', 0, %s);
@@ -49,7 +46,7 @@ class PhoenixGas:
             print(f"⚠️ Error al actualizar Gas/Historial: {e}")
 
 # ==========================================
-# 🦅 MOTOR PHOENIX HIBRID (Versión 100% DB)
+# 🦅 MOTOR PHOENIX HIBRID (Integración Web)
 # ==========================================
 class PhoenixHybridGold:
     def __init__(self, config):
@@ -65,13 +62,45 @@ class PhoenixHybridGold:
 
         self.pares = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT"]
         self.gas_manager = PhoenixGas()
-        
-        # Estado inicial (En el futuro esto también irá a una tabla 'estado_motores')
         self.estado = {p: {'tk': 0.0, 'pm': 0.0, 'ni': 0, 'pico': 0.0} for p in self.pares}
         
         self.profit_objetivo = 1.3
         self.trailing_call = 0.3
-        self.monto_ini = 125.0 # Ajustado según tu lógica de capital operativo
+        self.monto_ini = 125.0
+
+    # --- 🛰️ NUEVA FUNCIÓN: REPORTE A LA WEB ---
+    def actualizar_balance_web(self):
+        """Calcula el capital en Binance y actualiza la tabla balance_total"""
+        try:
+            balance = self.exchange.fetch_balance()
+            usdt_libre = float(balance['total'].get('USDT', 0))
+            
+            capital_en_cripto = 0.0
+            for p in self.pares:
+                base = p.split('/')[0]
+                cantidad = balance['total'].get(base, 0)
+                if cantidad > 0:
+                    ticker = self.exchange.fetch_ticker(p)
+                    capital_en_cripto += cantidad * ticker['last']
+            
+            total_equidad = usdt_libre + capital_en_cripto
+
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE balance_total 
+                SET capital_usdt = %s, 
+                    capital_cripto_usdt = %s, 
+                    total_equidad = %s, 
+                    ultima_actualizacion = CURRENT_TIMESTAMP
+                WHERE motor = 'Hybrid Gold';
+            """, (usdt_libre, capital_en_cripto, total_equidad))
+            conn.commit()
+            cur.close()
+            conn.close()
+            print(f"📊 Web Actualizada | Hybrid Gold Total: ${total_equidad:.2f}")
+        except Exception as e:
+            print(f"⚠️ Error reporte web: {e}")
 
     def procesar(self):
         ahora = datetime.now().strftime('%H:%M:%S')
@@ -89,32 +118,24 @@ class PhoenixHybridGold:
                 precio = ticker['last']
                 b = self.estado[p]
 
-                # --- Lógica de Venta y Descuento de Gas ---
                 if b['tk'] > 0:
                     if precio > b['pico']: b['pico'] = precio
                     objetivo = b['pm'] * (1 + self.profit_objetivo / 100)
-
-                    # Condición de salida Trailing Profit
                     if precio >= objetivo and precio <= b['pico'] * (1 - (self.trailing_call / 100)):
                         ganancia = (precio * b['tk']) - (b['pm'] * b['tk'])
-                        
-                        print(f"💰 VENTA EXITOSA {p} | Ganancia: ${ganancia:.2f}")
-                        
-                        # ACTUALIZACIÓN EN BASE DE DATOS
                         self.gas_manager.registrar_operacion_y_descontar('Hybrid Gold', p, ganancia)
-                        
                         b.update({'tk': 0.0, 'pm': 0.0, 'ni': 0, 'pico': 0.0})
-                        continue
 
-                # --- Lógica de Compra ---
                 elif b['tk'] == 0:
-                    # (Aquí va tu lógica de ATR o indicadores para comprar)
                     cantidad = self.monto_ini / precio
                     b.update({'tk': cantidad, 'pm': precio, 'ni': 1, 'pico': precio})
                     print(f"🚀 COMPRA EJECUTADA {p} @ ${precio:.2f}")
 
             except Exception as e:
                 print(f"⚠️ Error en par {p}: {e}")
+        
+        # Al finalizar el escaneo de todos los pares, informamos a la web
+        self.actualizar_balance_web()
 
 # ==========================================
 # 🏁 CICLO PRINCIPAL
@@ -131,12 +152,11 @@ def obtener_config_usuario():
     except: return None
 
 if __name__ == "__main__":
-    print("🦅 PHOENIX HIBRID v10.0 - CONEXIÓN POSTGRES OK")
+    print("🦅 PHOENIX HIBRID v10.0 - MODO DASHBOARD ACTIVO")
     bot = None
     
     while True:
         config = obtener_config_usuario()
-        
         if config and config.get('hibrid_activo'):
             if bot is None:
                 bot = PhoenixHybridGold(config)

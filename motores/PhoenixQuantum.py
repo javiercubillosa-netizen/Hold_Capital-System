@@ -32,14 +32,11 @@ class PhoenixCloudGas:
             return "JAVIER CUBILLOS", 0.0
 
     def registrar_y_descontar(self, par, ganancia):
-        """Descuenta comisión y registra la venta en el historial del Dashboard"""
         comision = ganancia * 0.20
         try:
             conn = psycopg2.connect(self.db_url)
             cur = conn.cursor()
-            # 1. Actualizar balance de Gas
             cur.execute("UPDATE gas_system SET balance = balance - %s WHERE id = 1;", (comision,))
-            # 2. Registrar en la tabla de operaciones para que aparezca en la Web
             cur.execute("""
                 INSERT INTO operaciones (motor, par, tipo, precio, ganancia) 
                 VALUES ('Quantum Hedge AI', %s, 'VENTA', 0, %s);
@@ -71,8 +68,41 @@ class PhoenixQuantumHedgeAI:
             'options': {'adjustForTimeDifference': True}
         })
 
-        # Estado en memoria (Temporalmente, mientras el servidor esté vivo)
         self.estado = {p:{'tk':0,'pm':0,'ni':0,'pico':0} for p in self.pares}
+
+    # --- 🛰️ NUEVA FUNCIÓN: REPORTE DE BALANCE A LA WEB ---
+    def actualizar_balance_web(self):
+        """Calcula capital total en Binance y actualiza la tabla balance_total"""
+        try:
+            balance = self.exchange.fetch_balance()
+            usdt_libre = float(balance['total'].get('USDT', 0))
+            
+            capital_en_cripto = 0.0
+            for p in self.pares:
+                base = p.split('/')[0]
+                cantidad = balance['total'].get(base, 0)
+                if cantidad > 0:
+                    ticker = self.exchange.fetch_ticker(p)
+                    capital_en_cripto += cantidad * ticker['last']
+            
+            total_equidad = usdt_libre + capital_en_cripto
+
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE balance_total 
+                SET capital_usdt = %s, 
+                    capital_cripto_usdt = %s, 
+                    total_equidad = %s, 
+                    ultima_actualizacion = CURRENT_TIMESTAMP
+                WHERE motor = 'Quantum Hedge AI';
+            """, (usdt_libre, capital_en_cripto, total_equidad))
+            conn.commit()
+            cur.close()
+            conn.close()
+            print(f"📊 Web Actualizada | Quantum Total: ${total_equidad:.2f}")
+        except Exception as e:
+            print(f"⚠️ Error reporte web Quantum: {e}")
 
     def enviar_telegram(self, m):
         try:
@@ -112,28 +142,24 @@ class PhoenixQuantumHedgeAI:
                 profit = self.ia_profit(p, precio, atr, last)
                 b = self.estado[p]
 
-                # --- Lógica de Venta con Trailing Dinámico ---
                 if b['tk'] > 0:
                     if precio > b['pico']: b['pico'] = precio
                     objetivo = b['pm']*(1+profit/100)
-                    
                     if precio >= objetivo and precio <= b['pico']*(1-0.3/100):
                         ganancia = (precio*b['tk'])-(b['pm']*b['tk'])
-                        
-                        # Guardar en Base de Datos y descontar Gas
                         comision = self.db_manager.registrar_y_descontar(p, ganancia)
-                        
                         self.enviar_telegram(f"🔴 PHOENIX QUANTUM: VENTA\n📦 Par: {p}\n💰 Ganancia: ${ganancia:.2f}\n⛽ Gas: -${comision:.2f}")
-                        
                         b.update({'tk':0,'pm':0,'ni':0,'pico':0})
                 
-                # --- Lógica de Compra ---
                 elif b['tk'] == 0:
                     cantidad = self.monto_ini / precio
                     b.update({'tk':cantidad, 'pm':precio, 'ni':1, 'pico':precio})
                     self.enviar_telegram(f"🟢 PHOENIX QUANTUM: COMPRA\n📦 Par: {p}\n💵 Precio: ${precio:.2f}")
 
             except Exception as e: print(f"⚠️ Error {p}: {e}")
+        
+        # Al final del proceso, reportamos a la web
+        self.actualizar_balance_web()
 
 # ==========================================
 # 🏁 EJECUCIÓN
