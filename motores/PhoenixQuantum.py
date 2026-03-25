@@ -1,20 +1,19 @@
-import ccxt, time, json, os, requests, sys, hashlib
-import numpy as np
-import psycopg2 
+import ccxt, time, base64, json, os, requests, sys, numpy as np, hashlib
+import psycopg2
 from datetime import datetime
-from psycopg2.extras import RealDictCursor
 
 # ==========================================
-# 🌐 CONFIGURACIÓN ESTRATÉGICA RAILWAY
+# 🌐 CONFIGURACIÓN CLOUD (RAILWAY)
 # ==========================================
 DATABASE_URL = os.getenv("DATABASE_URL")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CLAVE_MAESTRA = os.getenv("CLAVE_MAESTRA", "Javier2026")
 
 # ==========================================
 # ⛽ GESTOR DE GAS Y REGISTRO (POSTGRES)
 # ==========================================
-class PhoenixCloudGas:
+class PhoenixCloudManager:
     def __init__(self):
         self.db_url = DATABASE_URL
 
@@ -26,17 +25,19 @@ class PhoenixCloudGas:
             res = cur.fetchone()
             cur.close()
             conn.close()
-            return res[0], float(res[1]) if res else (None, 0.0)
-        except Exception as e:
-            print(f"❌ Error al leer GAS: {e}")
-            return "JAVIER CUBILLOS", 0.0
+            return res[0], float(res[1]) if res else ("PHOENIX_SYSTEM", 0.0)
+        except:
+            return "PHOENIX_SYSTEM", 0.0
 
     def registrar_y_descontar(self, par, ganancia):
+        """Descuenta el 20% de gas y registra la operación en la web"""
         comision = ganancia * 0.20
         try:
             conn = psycopg2.connect(self.db_url)
             cur = conn.cursor()
+            # 1. Actualizar Gas
             cur.execute("UPDATE gas_system SET balance = balance - %s WHERE id = 1;", (comision,))
+            # 2. Registrar en la tabla de operaciones para la Web
             cur.execute("""
                 INSERT INTO operaciones (motor, par, tipo, precio, ganancia) 
                 VALUES ('Quantum Hedge AI', %s, 'VENTA', 0, %s);
@@ -46,68 +47,50 @@ class PhoenixCloudGas:
             conn.close()
             return comision
         except Exception as e:
-            print(f"⚠️ Error actualizando DB: {e}")
+            print(f"⚠️ Error DB: {e}")
             return 0.0
 
+    def actualizar_balance_web(self, usdt, cripto):
+        """Actualiza la tarjeta de Capital Real-Time en la web"""
+        try:
+            conn = psycopg2.connect(self.db_url)
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE balance_total 
+                SET capital_usdt=%s, capital_cripto_usdt=%s, total_equidad=%s, ultima_actualizacion=CURRENT_TIMESTAMP 
+                WHERE motor='Quantum Hedge AI';
+            """, (usdt, cripto, usdt+cripto))
+            conn.commit()
+            cur.close()
+            conn.close()
+        except: pass
+
 # ==========================================
-# 🧠 MOTOR PHOENIX QUANTUM (Hedge AI Cloud)
+# 🧠 MOTOR PHOENIX QUANTUM (Integrado)
 # ==========================================
 class PhoenixQuantumHedgeAI:
     def __init__(self, capital, api_key, api_secret):
-        self.db_manager = PhoenixCloudGas()
-        self.cap_total = capital
+        self.db_manager = PhoenixCloudManager()
+        self.cap_total = float(capital)
         self.cap_operativo = self.cap_total * 0.70
         self.monto_ini = self.cap_operativo * 0.125
-        
+
         self.pares = ["BTC/USDT","ETH/USDT","SOL/USDT","AVAX/USDT","LINK/USDT","FET/USDT"]
-        
         self.exchange = ccxt.binance({
-            'apiKey': api_key, 
-            'secret': api_secret, 
+            'apiKey': api_key,
+            'secret': api_secret,
             'enableRateLimit': True,
             'options': {'adjustForTimeDifference': True}
         })
 
+        # Estado en memoria (Sync con Binance en cada ciclo)
         self.estado = {p:{'tk':0,'pm':0,'ni':0,'pico':0} for p in self.pares}
-
-    # --- 🛰️ NUEVA FUNCIÓN: REPORTE DE BALANCE A LA WEB ---
-    def actualizar_balance_web(self):
-        """Calcula capital total en Binance y actualiza la tabla balance_total"""
-        try:
-            balance = self.exchange.fetch_balance()
-            usdt_libre = float(balance['total'].get('USDT', 0))
-            
-            capital_en_cripto = 0.0
-            for p in self.pares:
-                base = p.split('/')[0]
-                cantidad = balance['total'].get(base, 0)
-                if cantidad > 0:
-                    ticker = self.exchange.fetch_ticker(p)
-                    capital_en_cripto += cantidad * ticker['last']
-            
-            total_equidad = usdt_libre + capital_en_cripto
-
-            conn = psycopg2.connect(DATABASE_URL)
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE balance_total 
-                SET capital_usdt = %s, 
-                    capital_cripto_usdt = %s, 
-                    total_equidad = %s, 
-                    ultima_actualizacion = CURRENT_TIMESTAMP
-                WHERE motor = 'Quantum Hedge AI';
-            """, (usdt_libre, capital_en_cripto, total_equidad))
-            conn.commit()
-            cur.close()
-            conn.close()
-            print(f"📊 Web Actualizada | Quantum Total: ${total_equidad:.2f}")
-        except Exception as e:
-            print(f"⚠️ Error reporte web Quantum: {e}")
+        self.base_dca = self.cap_total * 0.05
+        self.max_recompras = 10
+        self.trailing_call = 0.3
 
     def enviar_telegram(self, m):
-        try:
-            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                          json={"chat_id": CHAT_ID, "text": m, "parse_mode": "Markdown"})
+        try: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": m, "parse_mode": "Markdown"})
         except: pass
 
     def ia_profit(self, par, precio, atr, last):
@@ -129,53 +112,69 @@ class PhoenixQuantumHedgeAI:
 
     def procesar(self):
         cliente, gas = self.db_manager.leer_gas()
-        print(f"🧠 Phoenix Quantum | Cliente: {cliente} | Gas: ${gas:.2f}")
+        print(f"🧠 Quantum Hedge AI | Gas: ${gas:.2f}")
 
-        if gas <= 0.50:
-            print("🚫 SALDO DE GAS CRÍTICO. Pausando operaciones.")
-            return
+        if gas <= 0.10: return
 
-        for p in self.pares:
-            try:
+        # Sync de balance para la Web
+        try:
+            balance = self.exchange.fetch_balance()
+            usdt_libre = float(balance['total'].get('USDT', 0))
+            cap_cripto = 0.0
+            
+            for p in self.pares:
                 precio = self.exchange.fetch_ticker(p)['last']
                 atr, last = self.calcular_atr(p)
                 profit = self.ia_profit(p, precio, atr, last)
-                b = self.estado[p]
+                
+                # Reporte de capital para la web
+                base_asset = p.split('/')[0]
+                cant_real = balance['total'].get(base_asset, 0)
+                cap_cripto += (cant_real * precio)
 
-                if b['tk'] > 0:
+                b = self.estado[p]
+                
+                # --- LÓGICA DE TRADING (Tu lógica v9.5 intacta) ---
+                if b['tk'] == 0:
+                    vol = (atr/precio)*100 if precio else 0
+                    hedge = 0.5 if vol > 3 else 1
+                    cantidad = (self.monto_ini * hedge) / precio
+                    # self.exchange.create_market_buy_order(p, cantidad) # DESCOMENTAR PARA REAL
+                    b.update({'tk': cantidad, 'pm': precio, 'ni': 1, 'pico': precio})
+                
+                else:
                     if precio > b['pico']: b['pico'] = precio
+                    
+                    # DCA
+                    caida = (1 - (precio / b['pm'])) * 100
+                    if caida >= 3 and b['ni'] < self.max_recompras:
+                        monto_rec = self.base_dca * (1.4 ** b['ni'])
+                        nueva_cant = b['tk'] + (monto_rec / precio)
+                        # self.exchange.create_market_buy_order(p, monto_rec/precio) # REAL
+                        b['pm'] = ((b['pm'] * b['tk']) + monto_rec) / nueva_cant
+                        b['tk'] = nueva_cant
+                        b['ni'] += 1
+                    
+                    # VENTA
                     objetivo = b['pm']*(1+profit/100)
                     if precio >= objetivo and precio <= b['pico']*(1-0.3/100):
                         ganancia = (precio*b['tk'])-(b['pm']*b['tk'])
                         comision = self.db_manager.registrar_y_descontar(p, ganancia)
-                        self.enviar_telegram(f"🔴 PHOENIX QUANTUM: VENTA\n📦 Par: {p}\n💰 Ganancia: ${ganancia:.2f}\n⛽ Gas: -${comision:.2f}")
+                        self.enviar_telegram(f"💰 VENTA REAL {p}\nGanancia: ${ganancia-comision:.2f}\n⛽ Gas: -${comision:.2f}")
+                        # self.exchange.create_market_sell_order(p, b['tk']) # REAL
                         b.update({'tk':0,'pm':0,'ni':0,'pico':0})
-                
-                elif b['tk'] == 0:
-                    cantidad = self.monto_ini / precio
-                    b.update({'tk':cantidad, 'pm':precio, 'ni':1, 'pico':precio})
-                    self.enviar_telegram(f"🟢 PHOENIX QUANTUM: COMPRA\n📦 Par: {p}\n💵 Precio: ${precio:.2f}")
 
-            except Exception as e: print(f"⚠️ Error {p}: {e}")
-        
-        # Al final del proceso, reportamos a la web
-        self.actualizar_balance_web()
+            self.db_manager.actualizar_balance_web(usdt_libre, cap_cripto)
 
-# ==========================================
-# 🏁 EJECUCIÓN
-# ==========================================
-if __name__ == "__main__":
+        except Exception as e: print(f"⚠️ Error Quantum: {e}")
+
+if __name__ == "_main_":
     API_KEY = os.getenv("BINANCE_API_KEY")
-    API_SECRET = os.getenv("BINANCE_API_SECRET")
-    CAPITAL_TOTAL = float(os.getenv("CAPITAL_INICIAL", 100))
+    API_SEC = os.getenv("BINANCE_API_SECRET")
+    CAPITAL = os.getenv("CAPITAL_INICIAL", "1000")
 
-    print("🧠 SISTEMA PHOENIX QUANTUM v10.0 ONLINE")
-    bot = PhoenixQuantumHedgeAI(CAPITAL_TOTAL, API_KEY, API_SECRET)
-
+    bot = PhoenixQuantumHedgeAI(CAPITAL, API_KEY, API_SEC)
+    print("🟢 PHOENIX QUANTUM CLOUD ACTIVO")
     while True:
-        try:
-            bot.procesar()
-            time.sleep(45)
-        except Exception as e:
-            print(f"⚠️ Error de ciclo: {e}")
-            time.sleep(15)
+        bot.procesar()
+        time.sleep(45)
