@@ -1,17 +1,19 @@
-import ccxt, time, json, os, requests, sys, numpy as np
-import psycopg2 
+import ccxt, time, base64, json, os, requests, sys, numpy as np, hashlib
+import psycopg2 # Importante para Railway
 from datetime import datetime
-from psycopg2.extras import RealDictCursor
 
 # ==========================================
-# 🌐 CONFIGURACIÓN ESTRATÉGICA RAILWAY
+# 🌐 CONFIGURACIÓN CLOUD (RAILWAY)
 # ==========================================
 DATABASE_URL = os.getenv("DATABASE_URL")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CLAVE_MAESTRA = os.getenv("CLAVE_MAESTRA", "Javier2026")
 
 # ==========================================
-# ⛽ CLASE DE GESTIÓN DE GAS (POSTGRES)
+# ⛽ GESTOR DE GAS Y COSECHA (POSTGRES)
 # ==========================================
-class PhoenixGas:
+class PhoenixCloudManager:
     def __init__(self):
         self.db_url = DATABASE_URL
 
@@ -19,21 +21,25 @@ class PhoenixGas:
         try:
             conn = psycopg2.connect(self.db_url)
             cur = conn.cursor()
-            cur.execute("SELECT balance FROM gas_system WHERE id = 1;")
+            cur.execute("SELECT cliente, balance FROM gas_system WHERE id = 1;")
             res = cur.fetchone()
             cur.close()
             conn.close()
-            return float(res[0]) if res else 0.0
-        except Exception as e:
-            print(f"❌ Error al leer GAS: {e}")
-            return 0.0
+            return res[0], float(res[1]) if res else ("PHOENIX_SYSTEM", 0.0)
+        except:
+            return "PHOENIX_SYSTEM", 0.0
 
-    def registrar_operacion_y_descontar(self, motor, par, ganancia):
-        comision = ganancia * 0.20
+    def registrar_venta_y_descontar(self, motor, par, ganancia):
+        """Aplica lógica de Gas (20%) y registra Cosecha (80%) en la DB"""
+        comision_gas = ganancia * 0.20
+        cosecha = ganancia * 0.80
+        
         try:
             conn = psycopg2.connect(self.db_url)
             cur = conn.cursor()
-            cur.execute("UPDATE gas_system SET balance = balance - %s WHERE id = 1;", (comision,))
+            # 1. Descontar Gas
+            cur.execute("UPDATE gas_system SET balance = balance - %s WHERE id = 1;", (comision_gas,))
+            # 2. Registrar Operación en la Web (Cosecha va implícita en la ganancia)
             cur.execute("""
                 INSERT INTO operaciones (motor, par, tipo, precio, ganancia) 
                 VALUES (%s, %s, 'VENTA', 0, %s);
@@ -41,128 +47,108 @@ class PhoenixGas:
             conn.commit()
             cur.close()
             conn.close()
-            print(f"✅ Gas actualizado: -${comision:.2f} | Historial guardado.")
+            return comision_gas, cosecha
         except Exception as e:
-            print(f"⚠️ Error al actualizar Gas/Historial: {e}")
+            print(f"⚠️ Error DB: {e}")
+            return 0.0, 0.0
 
 # ==========================================
-# 🦅 MOTOR PHOENIX HIBRID (Integración Web)
+# 🦅 MOTOR PHOENIX HIBRID (Integrado)
 # ==========================================
 class PhoenixHybridGold:
-    def __init__(self, config):
-        self.api_key = config['api_key_cifrada']
-        self.api_secret = config['api_secret_cifrada']
-        
+    def __init__(self, capital, api_key, api_secret):
+        self.db_manager = PhoenixCloudManager()
+        self.cap_total = float(capital)
+        self.cap_operativo = self.cap_total * 0.70
+        self.monto_ini = self.cap_operativo * 0.125
+
+        self.pares = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT"]
         self.exchange = ccxt.binance({
-            'apiKey': self.api_key,
-            'secret': self.api_secret,
+            'apiKey': api_key,
+            'secret': api_secret,
             'enableRateLimit': True,
             'options': {'adjustForTimeDifference': True}
         })
 
-        self.pares = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT"]
-        self.gas_manager = PhoenixGas()
+        # Estado en memoria (En Railway se limpia al reiniciar, lo ideal es sync_estado_real)
         self.estado = {p: {'tk': 0.0, 'pm': 0.0, 'ni': 0, 'pico': 0.0} for p in self.pares}
-        
         self.profit_objetivo = 1.3
         self.trailing_call = 0.3
-        self.monto_ini = 125.0
 
-    # --- 🛰️ NUEVA FUNCIÓN: REPORTE A LA WEB ---
     def actualizar_balance_web(self):
-        """Calcula el capital en Binance y actualiza la tabla balance_total"""
+        """Envía el balance actual de este motor a la tabla balance_total"""
         try:
             balance = self.exchange.fetch_balance()
-            usdt_libre = float(balance['total'].get('USDT', 0))
-            
-            capital_en_cripto = 0.0
+            usdt = float(balance['total'].get('USDT', 0))
+            cripto = 0.0
             for p in self.pares:
                 base = p.split('/')[0]
-                cantidad = balance['total'].get(base, 0)
-                if cantidad > 0:
-                    ticker = self.exchange.fetch_ticker(p)
-                    capital_en_cripto += cantidad * ticker['last']
+                cant = balance['total'].get(base, 0)
+                if cant > 0:
+                    cripto += cant * self.exchange.fetch_ticker(p)['last']
             
-            total_equidad = usdt_libre + capital_en_cripto
-
             conn = psycopg2.connect(DATABASE_URL)
             cur = conn.cursor()
             cur.execute("""
                 UPDATE balance_total 
-                SET capital_usdt = %s, 
-                    capital_cripto_usdt = %s, 
-                    total_equidad = %s, 
-                    ultima_actualizacion = CURRENT_TIMESTAMP
-                WHERE motor = 'Hybrid Gold';
-            """, (usdt_libre, capital_en_cripto, total_equidad))
+                SET capital_usdt=%s, capital_cripto_usdt=%s, total_equidad=%s, ultima_actualizacion=CURRENT_TIMESTAMP 
+                WHERE motor='Hybrid Gold';
+            """, (usdt, cripto, usdt+cripto))
             conn.commit()
             cur.close()
             conn.close()
-            print(f"📊 Web Actualizada | Hybrid Gold Total: ${total_equidad:.2f}")
-        except Exception as e:
-            print(f"⚠️ Error reporte web: {e}")
+        except: pass
+
+    def enviar_telegram(self, m):
+        try: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": m})
+        except: pass
 
     def procesar(self):
-        ahora = datetime.now().strftime('%H:%M:%S')
-        saldo_gas = self.gas_manager.leer_gas()
-        
-        print(f"--- 📡 Scan Phoenix Hybrid | Gas: ${saldo_gas:.2f} | {ahora} ---")
+        cliente, gas = self.db_manager.leer_gas()
+        print(f"🦅 Hybrid Gold | Gas: ${gas:.2f}")
 
-        if saldo_gas <= 0.50:
-            print("🚫 GAS INSUFICIENTE. Operaciones pausadas.")
-            return
+        if gas <= 0.10: return
 
         for p in self.pares:
             try:
-                ticker = self.exchange.fetch_ticker(p)
-                precio = ticker['last']
+                precio = self.exchange.fetch_ticker(p)['last']
                 b = self.estado[p]
 
-                if b['tk'] > 0:
+                # --- Lógica de COMPRA ---
+                if b['tk'] == 0:
+                    cantidad = self.monto_ini / precio
+                    # self.exchange.create_market_buy_order(p, cantidad) # DESCOMENTAR PARA REAL
+                    b.update({'tk': cantidad, 'pm': precio, 'ni': 1, 'pico': precio})
+                    print(f"🚀 COMPRA {p} a ${precio}")
+
+                # --- Lógica de VENTA ---
+                else:
                     if precio > b['pico']: b['pico'] = precio
                     objetivo = b['pm'] * (1 + self.profit_objetivo / 100)
+
                     if precio >= objetivo and precio <= b['pico'] * (1 - (self.trailing_call / 100)):
                         ganancia = (precio * b['tk']) - (b['pm'] * b['tk'])
-                        self.gas_manager.registrar_operacion_y_descontar('Hybrid Gold', p, ganancia)
+                        
+                        # ACTUALIZAR DB (Gas y Cosecha)
+                        comision, cosecha = self.db_manager.registrar_venta_y_descontar('Hybrid Gold', p, ganancia)
+                        
+                        self.enviar_telegram(f"💰 VENTA {p}\nGanancia: ${ganancia:.2f}\n🌾 Cosecha: ${cosecha:.2f}\n⛽ Gas: -${comision:.2f}")
+                        
+                        # self.exchange.create_market_sell_order(p, b['tk']) # DESCOMENTAR PARA REAL
                         b.update({'tk': 0.0, 'pm': 0.0, 'ni': 0, 'pico': 0.0})
 
-                elif b['tk'] == 0:
-                    cantidad = self.monto_ini / precio
-                    b.update({'tk': cantidad, 'pm': precio, 'ni': 1, 'pico': precio})
-                    print(f"🚀 COMPRA EJECUTADA {p} @ ${precio:.2f}")
-
             except Exception as e:
-                print(f"⚠️ Error en par {p}: {e}")
+                print(f"⚠️ Error en {p}: {e}")
         
-        # Al finalizar el escaneo de todos los pares, informamos a la web
         self.actualizar_balance_web()
 
-# ==========================================
-# 🏁 CICLO PRINCIPAL
-# ==========================================
-def obtener_config_usuario():
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT * FROM usuarios WHERE email = 'admin@holdcapital.io' LIMIT 1")
-        user = cur.fetchone()
-        cur.close()
-        conn.close()
-        return user
-    except: return None
-
 if __name__ == "__main__":
-    print("🦅 PHOENIX HIBRID v10.0 - MODO DASHBOARD ACTIVO")
-    bot = None
-    
-    while True:
-        config = obtener_config_usuario()
-        if config and config.get('hibrid_activo'):
-            if bot is None:
-                bot = PhoenixHybridGold(config)
-            bot.procesar()
-        else:
-            print("💤 Phoenix Hibrid en espera (OFF en Dashboard)")
-            bot = None 
+    # En Railway las variables vienen del entorno, no del input()
+    API_KEY = os.getenv("BINANCE_API_KEY")
+    API_SECRET = os.getenv("BINANCE_API_SECRET")
+    CAPITAL = os.getenv("CAPITAL_INICIAL", "1000")
 
+    bot = PhoenixHybridGold(CAPITAL, API_KEY, API_SECRET)
+    while True:
+        bot.procesar()
         time.sleep(45)
