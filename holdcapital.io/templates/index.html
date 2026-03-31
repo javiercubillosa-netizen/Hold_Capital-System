@@ -39,7 +39,6 @@
             border-bottom: 1px solid #333;
             padding-bottom: 10px;
         }
-        /* Grid de Tarjetas */
         .dashboard-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -69,7 +68,6 @@
             font-size: 2rem;
             font-weight: bold;
         }
-        /* Tabla de Operaciones */
         .table-container {
             background: #0a0a0a;
             border-radius: 10px;
@@ -104,16 +102,16 @@
 <body>
     <div class="container">
         <h1>HOLDCAPITAL.IO</h1>
-        <p class="subtitle">Ecosistema Digital de Alta Precisión | {{ usuario }}</p>
+        <p class="subtitle">Ecosistema Digital de Alta Precisión | {{ cliente }}</p>
 
         <div class="dashboard-grid">
             <div class="card">
                 <h3>Capital Real-Time (Binance)</h3>
-                <div class="value">$ {{ "%.2f"|format(capital) }}</div>
+                <div class="value" id="saldo-binance">$ {{ saldo }}</div>
             </div>
             <div class="card">
                 <h3>Saldo Gas Phoenix</h3>
-                <div class="value">$ {{ "%.2f"|format(gas) }}</div>
+                <div class="value" id="saldo-gas">$ {{ gas }}</div>
             </div>
         </div>
 
@@ -127,30 +125,41 @@
                         <th>Ganancia</th>
                     </tr>
                 </thead>
-                <tbody>
-                    {% for op in operaciones %}
-                    <tr>
-                        <td>{{ op.motor }}</td>
-                        <td>{{ op.par }}</td>
-                        <td>{{ op.tipo }}</td>
-                        <td style="color: {{ '#00ff88' if op.ganancia > 0 else '#ff4444' }};">
-                            {{ "$ %.2f"|format(op.ganancia) }}
-                        </td>
-                    </tr>
-                    {% else %}
+                <tbody id="tabla-operaciones">
                     <tr>
                         <td colspan="4" style="text-align: center; color: #555; padding: 25px;">
-                            Esperando señales de los motores Phoenix...
+                            Monitoreando señales de los motores Phoenix...
                         </td>
                     </tr>
-                    {% endfor %}
                 </tbody>
             </table>
         </div>
 
-        <div class="status">
+        <div class="status" id="sistema-status">
             ● Phoenix System: Conectado | Modo Cloud Activo
         </div>
     </div>
+
+    <script>
+        function actualizarDatos() {
+            fetch('/api/data')
+                .then(response => response.json())
+                .then(data => {
+                    // Actualiza Capital y Gas en pantalla
+                    document.getElementById('saldo-binance').innerText = '$ ' + data.saldo;
+                    document.getElementById('saldo-gas').innerText = '$ ' + data.gas;
+                    
+                    // Actualiza el texto de status
+                    if(data.status) {
+                        document.getElementById('sistema-status').innerText = '● ' + data.status;
+                    }
+                })
+                .catch(err => console.log('Esperando conexión con los motores...'));
+        }
+        
+        // Ejecutar al cargar y luego cada 30 segundos
+        actualizarDatos();
+        setInterval(actualizarDatos, 30000);
+    </script>
 </body>
 </html>
