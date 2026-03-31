@@ -1,71 +1,59 @@
-import os
-from flask import Flask, render_template, request, flash, redirect, url_for
-from cryptography.fernet import Fernet
-import base64
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import os, ccxt, json, base64
+from flask import Flask, render_template, jsonify
 
-app = Flask(__name__)
-# En Railway, esto se configura en la pestaña 'Variables'
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'clave_temporal_de_desarrollo_123')
+app = Flask(_name_)
 
-# --- LÓGICA DE CIFRADO ---
-def generar_suite_cifrado(password_usuario):
-    password = password_usuario.encode()
-    salt = b'hold_capital_salt_fijo' 
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=100000,
-    )
-    key = base64.urlsafe_b64encode(kdf.derive(password))
-    return Fernet(key)
+# ==========================================
+# 🔑 CONFIGURACIÓN DESDE RAILWAY
+# ==========================================
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
+CLIENTE = os.getenv("CLIENTE", "JAVIER CUBILLOS")
 
-# --- RUTAS DE LA PÁGINA ---
+# Rutas de persistencia (Deben coincidir con los motores)
+RUTA_GAS = "/data/gas_balance.txt" if os.path.exists("/data") else "gas_balance.txt"
 
-# 1. Página de Inicio (Redirige al Dashboard)
+def obtener_saldo_binance():
+    try:
+        if not API_KEY or not API_SECRET:
+            return 0.0
+        exchange = ccxt.binance({'apiKey': API_KEY, 'secret': API_SECRET})
+        balance = exchange.fetch_balance()
+        return round(balance['total'].get('USDT', 0.0), 2)
+    except:
+        return 0.0
+
+def obtener_gas_local():
+    try:
+        if os.path.exists(RUTA_GAS):
+            with open(RUTA_GAS, "r") as f:
+                # Decodificamos el formato base64 que usan tus motores
+                return float(base64.b64decode(f.read().strip()).decode())
+        return 20.0 # Saldo inicial por defecto
+    except:
+        return 0.0
+
+# ==========================================
+# 🌐 RUTAS DE LA PÁGINA WEB
+# ==========================================
+
 @app.route('/')
 def index():
-    return redirect(url_for('dashboard'))
+    # Esta ruta carga tu HTML principal
+    saldo = obtener_saldo_binance()
+    gas = obtener_gas_local()
+    return render_template('index.html', cliente=CLIENTE, saldo=saldo, gas=gas)
 
-# 2. El Dashboard (El panel con las tarjetas de Phoenix y Atlas)
-@app.route('/dashboard')
-def dashboard():
-    # Datos simulados que luego vendrán de tu base de datos
-    datos_usuario = {
-        "bono": 50.00,
-        "estados": {
-            "hibrid": "Inactivo",
-            "quantum": "Inactivo",
-            "cycle": "Inactivo",
-            "atlas": "Inactivo"
-        }
-    }
-    return render_template('dashboard.html', usuario=datos_usuario)
+@app.route('/api/data')
+def api_data():
+    # Esta ruta permite que el dashboard se actualice sin recargar la página
+    return jsonify({
+        "saldo": obtener_saldo_binance(),
+        "gas": obtener_gas_local(),
+        "status": "Phoenix System: Conectado | Modo Cloud Activo"
+    })
 
-# 3. Configuración de API Keys (Donde el cliente pone sus llaves)
-@app.route('/configurar-sistema', methods=['GET', 'POST'])
-def configurar_keys():
-    if request.method == 'POST':
-        api_key = request.form.get('api_key')
-        api_secret = request.form.get('api_secret')
-        pass_ops = request.form.get('pass_ops')
-        
-        try:
-            suite = generar_suite_cifrado(pass_ops)
-            api_cifrada = suite.encrypt(api_key.encode()).decode()
-            secret_cifrada = suite.encrypt(api_secret.encode()).decode()
-            
-            # Aquí guardarás api_cifrada y secret_cifrada en PostgreSQL de Railway
-            flash("¡Credenciales cifradas y guardadas con éxito!", "success")
-            return redirect(url_for('dashboard'))
-        except Exception as e:
-            flash("Error al procesar las llaves. Intente nuevamente.", "danger")
-            
-    return render_template('configurar.html')
-
-if __name__ == '__main__':
-    # Puerto dinámico para que Railway pueda asignar uno
+if _name_ == "_main_":
+    # Railway asigna el puerto automáticamente
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
