@@ -141,25 +141,21 @@
     </div>
 
     <script>
-        function actualizarDatos() {
-            fetch('datos_phoenix')
-                .then(response => response.json())
-                .then(data => {
-                    // Actualiza Capital y Gas en pantalla
-                    document.getElementById('saldo-binance').innerText = '$ ' + data.saldo;
-                    document.getElementById('saldo-gas').innerText = '$ ' + data.gas;
-                    
-                    // Actualiza el texto de status
-                    if(data.status) {
-                        document.getElementById('sistema-status').innerText = '● ' + data.status;
-                    }
-                })
-                .catch(err => console.log('Esperando conexión con los motores...'));
-        }
-        
-        // Ejecutar al cargar y luego cada 30 segundos
-        actualizarDatos();
-        setInterval(actualizarDatos, 30000);
-    </script>
+    function traerDatos() {
+        // Usamos la nueva ruta '/actualizar' para matar el 404
+        fetch('/actualizar')
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('saldo-binance').innerText = '$ ' + data.saldo;
+                document.getElementById('saldo-gas').innerText = '$ ' + data.gas;
+                document.getElementById('sistema-status').innerText = '● ' + data.status;
+            })
+            .catch(e => console.log("Sincronizando..."));
+    }
+    
+    // Ejecutar de inmediato y cada 20 segundos
+    traerDatos();
+    setInterval(traerDatos, 20000);
+</script>
 </body>
 </html>
