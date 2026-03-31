@@ -1,74 +1,36 @@
-import os, ccxt, json, base64
+import os, ccxt, json
 from flask import Flask, render_template, jsonify
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='holdcapital.io/templates')
 
-# ==========================================
-# 🔑 CONFIGURACIÓN DESDE RAILWAY
-# ==========================================
-# Forzamos la limpieza de las llaves por si acaso hay espacios
+# Variables
 API_KEY = os.getenv("BINANCE_API_KEY", "").strip()
 API_SECRET = os.getenv("BINANCE_API_SECRET", "").strip()
-CLIENTE = os.getenv("CLIENTE", "JAVIER CUBILLOS")
-
-# Ruta de persistencia para el Gas
-RUTA_GAS = "/data/gas_balance.txt" if os.path.exists("/data") else "gas_balance.txt"
-
-def obtener_saldo_binance():
-    if not API_KEY or not API_SECRET:
-        return "Configurar API"
-    try:
-        # Configuración optimizada para Binance Spot
-        exchange = ccxt.binance({
-            'apiKey': API_KEY,
-            'secret': API_SECRET,
-            'enableRateLimit': True,
-            'options': {'defaultType': 'spot'}
-        })
-        balance = exchange.fetch_balance()
-        total_usdt = balance['total'].get('USDT', 0.0)
-        return f"{total_usdt:,.2f}" # Formato con comas y 2 decimales
-    except Exception as e:
-        print(f"❌ Error Binance: {e}")
-        return "Error de Conexión"
-
-def obtener_gas_local():
-    # Primero intentamos leer el archivo que los motores actualizan
-    # Probamos ambas rutas comunes por si acaso
-    rutas_probables = [RUTA_GAS, "gas_holding.txt", "gas.txt"]
-    for ruta in rutas_probables:
-        if os.path.exists(ruta):
-            try:
-                with open(ruta, "r") as f:
-                    contenido = f.read().strip()
-                    # Si es base64 (encriptado por el motor)
-                    return f"{float(base64.b64decode(contenido).decode()):,.2f}"
-            except:
-                try:
-                    # Si es texto plano
-                    with open(ruta, "r") as f:
-                        return f"{float(f.read().strip()):,.2f}"
-                except: continue
-    return "20.00"
-
-# ==========================================
-# 🌐 RUTAS DE LA PÁGINA WEB
-# ==========================================
 
 @app.route('/')
 def index():
-    return render_template('index.html', 
-                           cliente=CLIENTE, 
-                           saldo=obtener_saldo_binance(), 
-                           gas=obtener_gas_local())
+    # Forzamos valores por defecto si falla la conexión
+    saldo = "Conectando..."
+    try:
+        if API_KEY and API_SECRET:
+            ex = ccxt.binance({'apiKey': API_KEY, 'secret': API_SECRET})
+            bal = ex.fetch_balance()
+            saldo = f"{bal['total'].get('USDT', 0.0):,.2f}"
+    except: saldo = "Error API"
+    
+    return render_template('index.html', cliente="JAVIER CUBILLOS", saldo=saldo, gas="20.00")
 
 @app.route('/api/data')
 def api_data():
-    return jsonify({
-        "saldo": obtener_saldo_binance(),
-        "gas": obtener_gas_local(),
-        "status": "Phoenix System: Online | Conectado a Binance"
-    })
+    saldo = "0.00"
+    try:
+        if API_KEY and API_SECRET:
+            ex = ccxt.binance({'apiKey': API_KEY, 'secret': API_SECRET})
+            bal = ex.fetch_balance()
+            saldo = f"{bal['total'].get('USDT', 0.0):,.2f}"
+    except: pass
+    
+    return jsonify({"saldo": saldo, "gas": "20.00", "status": "Phoenix Online"})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
