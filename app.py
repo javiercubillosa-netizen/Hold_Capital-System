@@ -39,7 +39,7 @@ def get_balance():
 def index():
     saldo_actual = get_balance()
     return render_template('index.html', 
-                           usuario="JAVIER CUBILLOS", 
+                           usuario="JAVIER C-PHOENIX", 
                            capital=saldo_actual, 
                            gas="20.00")
 
