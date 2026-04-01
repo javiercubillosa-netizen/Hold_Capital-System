@@ -3,7 +3,7 @@ import ccxt
 from flask import Flask, render_template, jsonify
 
 # Ajuste de rutas para que Flask encuentre tus carpetas según tu estructura de GitHub
-app = Flask(_name_, 
+app = Flask(__name__, 
             template_folder='templates',  # Si están en la raíz, dejar solo 'templates'
             static_folder='static')
 
@@ -51,7 +51,7 @@ def actualizar():
         "status": "Phoenix Online"
     })
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     # Railway asigna el puerto dinámicamente
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
